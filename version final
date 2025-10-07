@@ -1,0 +1,314 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  * OBJETIVO: Implementar Contador de Décadas (A), Control RGB (B), Cambio de Modo (C) y Indicador de Modo (D).
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include <stdint.h>
+/* USER CODE END Includes */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+// --- Modos de Operación ---
+#define MODE_DECADE_COUNTER 0 // Parte A: Contador de Décadas
+#define MODE_RGB_CONTROL 1    // Parte B: Control de LED RGB
+
+// Definiciones Generales
+#define DEBOUNCE_DELAY_MS 50    // Retardo de anti-rebote en milisegundos
+
+// PINES DE ENTRADA (BOTONES)
+// Botón Aumentar (UP)
+#define BUTTON_UP_PORT GPIOA
+#define BUTTON_UP_PIN GPIO_PIN_11
+
+// Botón Decrementar (DOWN)
+#define BUTTON_DOWN_PORT GPIOA
+#define BUTTON_DOWN_PIN GPIO_PIN_10
+
+// Botón de Modo (MODE) - Usamos B1 que ya está en la configuración
+#define BUTTON_MODE_PORT GPIOC
+#define BUTTON_MODE_PIN GPIO_PIN_13
+
+// PINES DE SALIDA (LED RGB - Parte B)
+#define LED_R_PORT GPIOA
+#define LED_R_PIN GPIO_PIN_9
+#define LED_B_PORT GPIOA
+#define LED_B_PIN GPIO_PIN_8
+#define LED_G_PORT GPIOC
+#define LED_G_PIN GPIO_PIN_9
+
+// PINES DE SALIDA (LED DE MODO - Parte D)
+// Usaremos el LED LD2 que es común en las placas Nucleo
+#define LED_MODE_PORT GPIOA
+#define LED_MODE_PIN GPIO_PIN_5 // LD2_Pin en muchas placas
+
+// PINES DE SALIDA (LED 7 SEGMENTOS - Parte A) - Ejemplo: 7 pines en GPIOB
+#define SEGMENT_A_PIN GPIO_PIN_0
+#define SEGMENT_B_PIN GPIO_PIN_1
+#define SEGMENT_C_PIN GPIO_PIN_2
+#define SEGMENT_D_PIN GPIO_PIN_3
+#define SEGMENT_E_PIN GPIO_PIN_4
+#define SEGMENT_F_PIN GPIO_PIN_5
+#define SEGMENT_G_PIN GPIO_PIN_6
+#define SEGMENT_PORT GPIOB // Usaremos GPIOB para los segmentos
+/* USER CODE END PD */
+
+/* Private variables ---------------------------------------------------------*/
+UART_HandleTypeDef huart2;
+
+/* USER CODE BEGIN PV */
+volatile int contador_decadas = 0; // Contador persistente para la Parte A (0-9)
+volatile int contador_rgb = 0;    // Contador persistente para la Parte B (0-6)
+volatile int current_mode = MODE_DECADE_COUNTER; // Inicia en Modo A
+
+// Mapeo para Display de 7 Segmentos (ÁNODO COMÚN: 0=ON, 1=OFF)
+// {a, b, c, d, e, f, g}
+const uint8_t segment_map[10][7] = {
+    // a  b  c  d  e  f  g
+    {0, 0, 0, 0, 0, 0, 1}, // 0
+    {1, 0, 0, 1, 1, 1, 1}, // 1
+    {0, 0, 1, 0, 0, 1, 0}, // 2
+    {0, 0, 0, 0, 1, 1, 0}, // 3
+    {1, 0, 0, 1, 1, 0, 0}, // 4
+    {0, 1, 0, 0, 1, 0, 0}, // 5
+    {0, 1, 0, 0, 0, 0, 0}, // 6
+    {0, 0, 0, 1, 1, 1, 1}, // 7
+    {0, 0, 0, 0, 0, 0, 0}, // 8
+    {0, 0, 0, 0, 1, 0, 0}  // 9
+};
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_USART2_UART_Init(void);
+/* USER CODE BEGIN PFP */
+void SetRgbColor(int count);
+void DisplayDecade(int count);
+int ReadButtonDebounced(GPIO_TypeDef* GPIOx, uint16_t GPIO_Pin);
+void ToggleMode(void);
+void UpdateModeIndicator(void);
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+  HAL_Init();
+  SystemClock_Config();
+  MX_GPIO_Init();
+  MX_USART2_UART_Init();
+
+  /* Bucle Principal */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+	  // PARTE C: CAMBIO DE MODO
+	  if (ReadButtonDebounced(BUTTON_MODE_PORT, BUTTON_MODE_PIN)) {
+		  ToggleMode();
+	  }
+	  
+	  // PARTE D: INDICADOR DE MODO (Se actualiza con cada ciclo)
+	  UpdateModeIndicator();
+
+	  if (current_mode == MODE_DECADE_COUNTER) {
+		  // ------------------------------------
+		  // --- PARTE A: CONTADOR DE DÉCADAS (0-9) ---
+		  // ------------------------------------
+		  if (ReadButtonDebounced(BUTTON_UP_PORT, BUTTON_UP_PIN)) {
+			  contador_decadas = (contador_decadas + 1) % 10; // Ciclo 0 -> 9 -> 0
+		  }
+
+		  if (ReadButtonDebounced(BUTTON_DOWN_PORT, BUTTON_DOWN_PIN)) {
+			  contador_decadas = (contador_decadas == 0) ? 9 : (contador_decadas - 1); // Ciclo 9 -> 0
+		  }
+
+		  DisplayDecade(contador_decadas); // Mostrar valor
+		  SetRgbColor(-1); // Apagar RGB
+
+	  } else { // current_mode == MODE_RGB_CONTROL
+		  // ------------------------------------
+		  // --- PARTE B: CONTROL RGB (0-6) ---
+		  // ------------------------------------
+		  if (ReadButtonDebounced(BUTTON_UP_PORT, BUTTON_UP_PIN)) {
+			  contador_rgb = (contador_rgb + 1);
+			  if (contador_rgb > 6) contador_rgb = 0; // Ciclo 0 -> 6 -> 0
+		  }
+
+		  if (ReadButtonDebounced(BUTTON_DOWN_PORT, BUTTON_DOWN_PIN)) {
+			  contador_rgb = (contador_rgb == 0) ? 6 : (contador_rgb - 1); // Ciclo 6 -> 0
+		  }
+
+		  SetRgbColor(contador_rgb); // Controlar el color
+		  DisplayDecade(-1); // Apagar 7 Segmentos
+	  }
+
+	  HAL_Delay(5);
+  }
+  /* USER CODE END 3 */
+}
+
+// ... (SystemClock_Config y MX_USART2_UART_Init omitidas por brevedad) ...
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE(); 
+
+  /* Configure GPIO pin Output Level (RGB, LD2/LED_MODE) */
+  HAL_GPIO_WritePin(GPIOA, LED_MODE_PIN|LED_B_PIN|LED_R_PIN, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, LED_G_PIN, GPIO_PIN_RESET);
+
+  /* Configure GPIO pin Output Level (7 Segmentos) */
+  HAL_GPIO_WritePin(SEGMENT_PORT, SEGMENT_A_PIN|SEGMENT_B_PIN|SEGMENT_C_PIN|SEGMENT_D_PIN|SEGMENT_E_PIN|SEGMENT_F_PIN|SEGMENT_G_PIN, GPIO_PIN_SET); 
+
+  /*Configure GPIO pin : BUTTON_MODE_PIN (B1/PC13) */
+  GPIO_InitStruct.Pin = BUTTON_MODE_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT; 
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(BUTTON_MODE_PORT, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : RGB Pins PA8 PA9 y LED_MODE_PIN (LD2) */
+  GPIO_InitStruct.Pin = LED_MODE_PIN|LED_B_PIN|LED_R_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : LED_G_PIN (PC9) */
+  GPIO_InitStruct.Pin = LED_G_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PA10 PA11 (Botones UP/DOWN) */
+  GPIO_InitStruct.Pin = BUTTON_DOWN_PIN|BUTTON_UP_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  
+  /*Configure GPIO pins : 7 Segment Pins (GPIOB) */
+  GPIO_InitStruct.Pin = SEGMENT_A_PIN|SEGMENT_B_PIN|SEGMENT_C_PIN|SEGMENT_D_PIN|SEGMENT_E_PIN|SEGMENT_F_PIN|SEGMENT_G_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(SEGMENT_PORT, &GPIO_InitStruct);
+
+}
+
+/* USER CODE BEGIN 4 */
+
+/**
+  * @brief Alterna el modo de operación (Parte C).
+  * Los contadores conservan su valor.
+  */
+void ToggleMode(void) {
+	current_mode = (current_mode == MODE_DECADE_COUNTER) ? MODE_RGB_CONTROL : MODE_DECADE_COUNTER;
+}
+
+/**
+  * @brief Controla el LED indicador de modo (Parte D).
+  * Apagado (RESET) = Contador de Décadas (Parte A).
+  * Encendido (SET) = Control de LED RGB (Parte B).
+  */
+void UpdateModeIndicator(void) {
+	GPIO_PinState state = (current_mode == MODE_RGB_CONTROL) ? GPIO_PIN_SET : GPIO_PIN_RESET;
+	HAL_GPIO_WritePin(LED_MODE_PORT, LED_MODE_PIN, state);
+}
+
+
+/**
+  * @brief Muestra el dígito del contador en el Display de 7 Segmentos.
+  * @param count: Valor actual del contador (0 a 9). Usa -1 para apagar.
+  */
+void DisplayDecade(int count) {
+    if (count < 0 || count > 9) {
+        // Apagar todos los segmentos (HIGH para ánodo común)
+        HAL_GPIO_WritePin(SEGMENT_PORT, SEGMENT_A_PIN|SEGMENT_B_PIN|SEGMENT_C_PIN|SEGMENT_D_PIN|SEGMENT_E_PIN|SEGMENT_F_PIN|SEGMENT_G_PIN, GPIO_PIN_SET);
+        return;
+    }
+
+    uint16_t segment_pins[] = {
+        SEGMENT_A_PIN, SEGMENT_B_PIN, SEGMENT_C_PIN, SEGMENT_D_PIN,
+        SEGMENT_E_PIN, SEGMENT_F_PIN, SEGMENT_G_PIN
+    };
+
+    for (int i = 0; i < 7; i++) {
+        // Ánodo Común: 0 en la tabla = ON (RESET), 1 en la tabla = OFF (SET)
+        HAL_GPIO_WritePin(SEGMENT_PORT, segment_pins[i], segment_map[count][i] ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    }
+}
+
+
+/**
+  * @brief Controla el color del LED RGB según el valor del contador.
+  * @param count: Valor actual del contador (0 a 6). Usa -1 para apagar.
+  */
+void SetRgbColor(int count) {
+    // LÓGICA DE ÁNODO COMÚN: LOW (RESET) ENCIENDE el color. HIGH (SET) APAGA.
+    GPIO_PinState R, G, B;
+
+    if (count < 0) { 
+        R = G = B = GPIO_PIN_SET; // Apagado
+    } else {
+        switch (count) {
+            case 0: R = G = B = GPIO_PIN_SET; break; // (0, 0, 0) - Negro (Apagado)
+            case 1: R = GPIO_PIN_RESET; G = GPIO_PIN_SET; B = GPIO_PIN_SET; break; // (1, 0, 0) - Rojo
+            case 2: R = GPIO_PIN_RESET; G = GPIO_PIN_SET; B = GPIO_PIN_RESET; break; // (1, 0, 1) - Magenta
+            case 3: R = GPIO_PIN_SET; G = GPIO_PIN_SET; B = GPIO_PIN_RESET; break; // (0, 0, 1) - Azul
+            case 4: R = GPIO_PIN_SET; G = GPIO_PIN_RESET; B = GPIO_PIN_RESET; break; // (0, 1, 1) - Cian
+            case 5: R = GPIO_PIN_SET; G = GPIO_PIN_RESET; B = GPIO_PIN_SET; break; // (0, 1, 0) - Verde
+            case 6: R = GPIO_PIN_RESET; G = GPIO_PIN_RESET; B = GPIO_PIN_SET; break; // (1, 1, 0) - Amarillo
+            default: R = G = B = GPIO_PIN_SET; break;
+        }
+    }
+
+    HAL_GPIO_WritePin(LED_R_PORT, LED_R_PIN, R);
+    HAL_GPIO_WritePin(LED_G_PORT, LED_G_PIN, G);
+    HAL_GPIO_WritePin(LED_B_PORT, LED_B_PIN, B);
+}
+
+/**
+  * @brief Implementa la lectura del botón con Anti-Rebote (Debounce) y Anti-Repetición.
+  * @retval 1 si hubo una pulsación válida, 0 en caso contrario
+  */
+int ReadButtonDebounced(GPIO_TypeDef* GPIOx, uint16_t GPIO_Pin) {
+    // Lectura LOW (0) debido a la configuración Pull-Up
+    if (HAL_GPIO_ReadPin(GPIOx, GPIO_Pin) == GPIO_PIN_RESET) {
+        HAL_Delay(DEBOUNCE_DELAY_MS); // 1. Anti-Rebote
+        if (HAL_GPIO_ReadPin(GPIOx, GPIO_Pin) == GPIO_PIN_RESET) {
+            while (HAL_GPIO_ReadPin(GPIOx, GPIO_Pin) == GPIO_PIN_RESET) {
+                // 3. Esperar a que se suelte (Anti-Repetición)
+            }
+            return 1; // Pulsación válida registrada
+        }
+    }
+    return 0; // No hubo pulsación
+}
+
+/* USER CODE END 4 */
+// ... (Error_Handler y assert_failed omitidas por brevedad) ...
